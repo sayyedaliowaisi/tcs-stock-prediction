@@ -136,9 +136,15 @@ def add_pro_indicators(df):
     df["MOM_10"] = momentum(df["Close"], 10)
 
     # replace infinite, back/forward fill and then fill leftover with 0
-    df = df.replace([np.inf, -np.inf], np.nan).fillna(method="bfill").fillna(method="ffill").fillna(0)
-    return df
+   # Clean data safely
+def add_pro_indicators(df):
+    ...
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.bfill()
+    df = df.ffill()
+    df = df.fillna(0)
 
+    return df
 # -------------------------
 # Feature building / selection
 # -------------------------
@@ -311,123 +317,108 @@ def download_data(ticker, period_days=365):
 # Streamlit app
 # -------------------------
 def run_streamlit_app():
-    st.set_page_config(layout="wide", page_title="Stock App")
-    st.title("TCS Stock - Pro Indicators + RF + LSTM (Fixed)")
+    st.set_page_config(layout="wide", page_title="TCS Stock Prediction")
+    st.title("TCS Stock Prediction Dashboard")
 
-    st.sidebar.header("Config")
-    ticker_input = st.sidebar.text_input("Ticker", "TCS.NS")
-    days = st.sidebar.slider("Days", 90, 1825, 365)
-    show = st.sidebar.checkbox("Show Indicators", True)
+    st.sidebar.header("Configuration")
 
-    lstm_p = MODEL_DIR / "lstm_tcs_close.h5"
-    rf_p = MODEL_DIR / "rf_tcs_close.joblib"
-    scalers = list(MODEL_DIR.glob("*scaler*"))
-    scaler_p = scalers[0] if len(scalers) > 0 else MODEL_DIR / "lstm_scaler.save"
+ticker_input = st.sidebar.text_input("Ticker", "TCS.NS")
+days = st.sidebar.slider("Days", 90, 1825, 365)
+show = st.sidebar.checkbox("Show Indicators", True)
 
-    st.sidebar.write("Model files in models/:")
-    for f in MODEL_DIR.glob("*"):
-        st.sidebar.write(f.name)
+lstm_p = MODEL_DIR / "lstm_tcs_close.h5"
+rf_p = MODEL_DIR / "rf_tcs_close.joblib"
 
-    if st.sidebar.button("Load Models"):
-        # load models into session state with clear errors
-        try:
-            st.session_state["rf"] = load_rf_model_file(rf_p)
-            st.sidebar.success("RF loaded")
-        except Exception as e:
-            st.sidebar.error(f"RF load: {e}")
-            st.session_state["rf"] = None
-        try:
-            st.session_state["lstm"] = load_lstm_model_file(lstm_p)
-            st.sidebar.success("LSTM loaded")
-        except Exception as e:
-            st.sidebar.error(f"LSTM load: {e}")
-            st.session_state["lstm"] = None
-        try:
-            st.session_state["scaler"] = load_scaler_file(scaler_p)
-            st.sidebar.success("Scaler loaded")
-        except Exception as e:
-            st.sidebar.error(f"Scaler load: {e}")
-            st.session_state["scaler"] = None
+scalers = list(MODEL_DIR.glob("*scaler*"))
+scaler_p = scalers[0] if len(scalers) > 0 else MODEL_DIR / "lstm_scaler.save"
 
-    rf_model = st.session_state.get("rf")
-    lstm_model = st.session_state.get("lstm")
-    scaler = st.session_state.get("scaler")
-
-        # Data fetch + indicators
+if st.sidebar.button("Load Models"):
     try:
-        df = download_data(ticker_input, days)
+        st.session_state["rf"] = load_rf_model_file(rf_p)
+        st.sidebar.success("RF Model Loaded")
+    except Exception as e:
+        st.sidebar.error(f"RF Error: {e}")
 
-        st.write("Columns before indicators:")
-        st.write(df.columns.tolist())
+    try:
+        st.session_state["lstm"] = load_lstm_model_file(lstm_p)
+        st.sidebar.success("LSTM Model Loaded")
+    except Exception as e:
+        st.sidebar.error(f"LSTM Error: {e}")
 
-        df = add_pro_indicators(df)
+    try:
+        st.session_state["scaler"] = load_scaler_file(scaler_p)
+        st.sidebar.success("Scaler Loaded")
+    except Exception as e:
+        st.sidebar.error(f"Scaler Error: {e}")
 
-        st.success("Data & indicators loaded")
+rf_model = st.session_state.get("rf")
+lstm_model = st.session_state.get("lstm")
+scaler = st.session_state.get("scaler")
+
+try:
+    df = download_data(ticker_input, days)
+
+    st.write("Columns:", df.columns.tolist())
+
+    df = add_pro_indicators(df)
+
+    st.success("Data Loaded Successfully")
+
+except Exception as e:
+    st.error(str(e))
+    st.code(traceback.format_exc())
+    st.stop()
+
+close_col = df["Close"]
+
+if isinstance(close_col, pd.DataFrame):
+    close_col = close_col.iloc[:, 0]
+
+st.line_chart(close_col)
+
+if show:
+    st.dataframe(df.tail(50))
+
+if rf_model is not None:
+    try:
+        feat_df = build_rf_features_from_df(df)
+        rf_pred, used = predict_rf_from_df(rf_model, feat_df)
+
+        st.metric("RF Prediction", f"{rf_pred:.2f}")
+        st.caption("Features: " + ", ".join(used))
 
     except Exception as e:
-        st.error(str(e))
-        st.code(traceback.format_exc())
-        st.stop()
+        st.error(f"RF Prediction Error: {e}")
 
-    # show chart / data
-    close_col = df["Close"]
+if lstm_model is not None and scaler is not None:
+    try:
+        lstm_pred = predict_lstm(lstm_model, scaler, df)
+        st.metric("LSTM Prediction", f"{lstm_pred:.2f}")
 
-    if isinstance(close_col, pd.DataFrame):
-        close_col = close_col.iloc[:, 0]
+    except Exception as e:
+        st.error(f"LSTM Prediction Error: {e}")
 
-    if not close_col.empty:
-        st.line_chart(close_col)
-    else:
-        st.line_chart(pd.Series(dtype=float))
+fig, ax = plt.subplots(figsize=(12, 5))
 
-    # Prediction controls
-    with st.sidebar.expander("Predictions"):
-        if rf_model is None or lstm_model is None or scaler is None:
-            st.info("Load models to enable predictions")
-        else:
-            feat_df = build_rf_features_from_df(df)
-            st.write("Feature snapshot:", feat_df.to_dict(orient="records")[0])
+ax.plot(df.index, close_col, label="Close")
 
-            # RF prediction
-            try:
-                rf_pred, used = predict_rf_from_df(rf_model, feat_df)
-                st.metric("RF next prediction", f"{rf_pred:.2f}")
-                st.caption("RF used features: " + ", ".join(used))
-            except Exception as e:
-                st.error(f"RF predict: {e}")
+if "SMA_14" in df.columns:
+    ax.plot(df.index, df["SMA_14"], label="SMA 14")
 
-            # LSTM prediction
-            try:
-                lstm_pred = predict_lstm(lstm_model, scaler, df)
-                st.metric("LSTM next prediction", f"{lstm_pred:.2f}")
-            except Exception as e:
-                st.error(f"LSTM predict: {e}")
+if "EMA_20" in df.columns:
+    ax.plot(df.index, df["EMA_20"], label="EMA 20")
 
-    # Plot indicators
-    fig, ax = plt.subplots(figsize=(10, 4))
-    if "Close" in df.columns:
-        ax.plot(df.index, df["Close"], label="Close")
-    if "SMA_14" in df.columns:
-        ax.plot(df.index, df["SMA_14"], label="SMA14")
-    if "EMA_20" in df.columns:
-        ax.plot(df.index, df["EMA_20"], label="EMA20")
-    ax.legend()
-    st.pyplot(fig)
+ax.legend()
+
+st.pyplot(fig)
+
+
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--streamlit", action="store_true")
-    parser.add_argument("--ticker", type=str, default="TCS.NS")
-    parser.add_argument("--days", type=int, default=365)
-    args = parser.parse_args()
-    if args.streamlit:
-        if st is None:
-            print("streamlit is not installed. Run 'pip install streamlit' or run without --streamlit")
-        else:
-            run_streamlit_app()
+    if st is not None:
+        run_streamlit_app()
     else:
-        df = download_data(args.ticker, args.days)
+        df = download_data("TCS.NS", 365)
         df = add_pro_indicators(df)
-        print(df[["Close", "SMA_14", "RSI_14"]].tail())
+        print(df.tail())
