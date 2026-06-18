@@ -353,34 +353,32 @@ def run_streamlit_app():
     lstm_model = st.session_state.get("lstm")
     scaler = st.session_state.get("scaler")
 
-    # Data fetch + indicators
-   
+        # Data fetch + indicators
+    try:
+        df = download_data(ticker_input, days)
 
-try:
-    df = download_data(ticker_input, days)
+        st.write("Columns before indicators:")
+        st.write(df.columns.tolist())
 
-    st.write("Columns before indicators:")
-    st.write(df.columns.tolist())
-    st.write(df.head())
+        df = add_pro_indicators(df)
 
-    df = add_pro_indicators(df)
+        st.success("Data & indicators loaded")
 
-    st.success("Data & indicators loaded")
-
-except Exception as e:
-    st.error(str(e))
-    st.code(traceback.format_exc())
-    st.stop()   # use this instead of return
-    
+    except Exception as e:
+        st.error(str(e))
+        st.code(traceback.format_exc())
+        st.stop()
 
     # show chart / data
-    if "Close" in df.columns and not df["Close"].empty:
-        st.line_chart(df["Close"])
+    close_col = df["Close"]
+
+    if isinstance(close_col, pd.DataFrame):
+        close_col = close_col.iloc[:, 0]
+
+    if not close_col.empty:
+        st.line_chart(close_col)
     else:
         st.line_chart(pd.Series(dtype=float))
-
-    if show:
-        st.dataframe(df.tail(50))
 
     # Prediction controls
     with st.sidebar.expander("Predictions"):
