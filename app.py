@@ -7,6 +7,7 @@ import importlib
 from datetime import datetime, timedelta
 from pathlib import Path
 import matplotlib.pyplot as plt
+import traceback
 
 # dynamic imports so script can run in non-streamlit contexts
 try:
@@ -74,18 +75,37 @@ def atr(df, n=14):
 def obv(df):
     if not isinstance(df, pd.DataFrame) or df.empty:
         return pd.Series(dtype=float)
+
     if "Close" not in df.columns:
         return pd.Series(np.nan, index=df.index)
+
     close = df["Close"]
+
+    # Force single series
+    if isinstance(close, pd.DataFrame):
+        close = close.iloc[:, 0]
+
     vol = df["Volume"] if "Volume" in df.columns else pd.Series(0, index=df.index)
+
+    if isinstance(vol, pd.DataFrame):
+        vol = vol.iloc[:, 0]
+
+    close = pd.to_numeric(close, errors="coerce")
+    vol = pd.to_numeric(vol, errors="coerce").fillna(0)
+
     out = [0.0]
-    for i in range(1, len(df)):
-        if close.iloc[i] > close.iloc[i - 1]:
+
+    for i in range(1, len(close)):
+        curr = float(close.iloc[i])
+        prev = float(close.iloc[i - 1])
+
+        if curr > prev:
             out.append(out[-1] + float(vol.iloc[i]))
-        elif close.iloc[i] < close.iloc[i - 1]:
+        elif curr < prev:
             out.append(out[-1] - float(vol.iloc[i]))
         else:
             out.append(out[-1])
+
     return pd.Series(out, index=df.index)
 
 def momentum(x, n=10):
@@ -245,23 +265,48 @@ def predict_rf_from_df(rf_model, feature_df):
 def download_data(ticker, period_days=365):
     end = datetime.now()
     start = end - timedelta(days=period_days)
+
     if yf is not None:
-        df = yf.download(ticker, start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"), progress=False)
+        df = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            progress=False,
+            auto_adjust=False
+        )
     elif pdr is not None:
         df = pdr.get_data_yahoo(ticker, start=start, end=end)
     else:
-        raise ModuleNotFoundError("neither yfinance nor pandas_datareader is available; pip install yfinance or pandas_datareader")
-    if df is None or getattr(df, "empty", True):
+        raise ModuleNotFoundError(
+            "neither yfinance nor pandas_datareader is available"
+        )
+
+    if df is None or df.empty:
         raise ValueError("no data")
+
+    # FIX MultiIndex columns from yfinance
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
     df = df.reset_index()
+
     expect = ["Date", "Open", "High", "Low", "Close", "Volume"]
+
     for c in expect:
         if c not in df.columns:
             df[c] = 0
-    df = df[expect]
-    df.set_index("Date", inplace=True)
-    return df
 
+    df = df[expect].copy()
+
+    # Force numeric types
+    for c in ["Open", "High", "Low", "Close", "Volume"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna()
+
+    df.set_index("Date", inplace=True)
+
+    return df
 # -------------------------
 # Streamlit app
 # -------------------------
@@ -309,14 +354,24 @@ def run_streamlit_app():
     scaler = st.session_state.get("scaler")
 
     # Data fetch + indicators
-    try:
-        df = download_data(ticker_input, days)
-        df = add_pro_indicators(df)
-        st.success("Data & indicators loaded")
-    except Exception as e:
-        # show full traceback-style message
-        st.error(f"Data download / indicator error: {e}")
-        return
+   
+
+try:
+    df = download_data(ticker_input, days)
+
+    st.write("Columns before indicators:")
+    st.write(df.columns.tolist())
+    st.write(df.head())
+
+    df = add_pro_indicators(df)
+
+    st.success("Data & indicators loaded")
+
+except Exception as e:
+    st.error(str(e))
+    st.code(traceback.format_exc())
+    st.stop()   # use this instead of return
+    
 
     # show chart / data
     if "Close" in df.columns and not df["Close"].empty:
